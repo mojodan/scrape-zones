@@ -7,12 +7,15 @@ Usage:
     python archive_session.py -c cookies.json
     python archive_session.py -c cookies.txt --list-keys
     python archive_session.py -c cookies.txt --list-zones
+    python archive_session.py -c cookies.txt --list-keys --start-date 01/01/2024 --end-date 12/31/2024
 """
 
 import argparse
 import http.cookiejar
 import json
+import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, urljoin
 
@@ -152,6 +155,61 @@ def extract_zone_urls(html_content: str, base_url: str) -> list[dict]:
     return zone_links
 
 
+def parse_date_from_text(text: str) -> datetime | None:
+    """Extract a date in MM/DD/YYYY format from text.
+
+    Args:
+        text: Text that may contain a date
+
+    Returns:
+        datetime object if a date is found, None otherwise
+    """
+    # Match MM/DD/YYYY format
+    match = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', text)
+    if match:
+        try:
+            month, day, year = match.groups()
+            return datetime(int(year), int(month), int(day))
+        except ValueError:
+            return None
+    return None
+
+
+def filter_keys_by_date(
+    key_urls: list[dict],
+    start_date: datetime | None = None,
+    end_date: datetime | None = None
+) -> list[dict]:
+    """Filter key URLs by date range.
+
+    Args:
+        key_urls: List of dicts with 'url' and 'text' keys
+        start_date: Include only URLs with dates >= this date
+        end_date: Include only URLs with dates <= this date
+
+    Returns:
+        Filtered list of key URLs
+    """
+    if start_date is None and end_date is None:
+        return key_urls
+
+    filtered = []
+    for item in key_urls:
+        item_date = parse_date_from_text(item['text'])
+        if item_date is None:
+            # If we can't parse a date, skip this item when filtering
+            continue
+
+        if start_date and item_date < start_date:
+            continue
+        if end_date and item_date > end_date:
+            continue
+
+        filtered.append(item)
+
+    return filtered
+
+
 def fetch_zones_from_keys(keys_urls: list[dict], cookies: dict, verbose: bool = False) -> list[dict]:
     """Navigate to each Keys URL and extract Zones links.
 
@@ -236,8 +294,34 @@ def main():
         action='store_true',
         help='Navigate to each "Keys" URL and list links containing "Zones" in their text'
     )
+    parser.add_argument(
+        '--start-date',
+        type=str,
+        default=None,
+        help='Filter results to dates >= this date (format: MM/DD/YYYY)'
+    )
+    parser.add_argument(
+        '--end-date',
+        type=str,
+        default=None,
+        help='Filter results to dates <= this date (format: MM/DD/YYYY)'
+    )
 
     args = parser.parse_args()
+
+    # Parse date arguments
+    start_date = None
+    end_date = None
+    if args.start_date:
+        start_date = parse_date_from_text(args.start_date)
+        if start_date is None:
+            print(f"Error: Invalid start date format: {args.start_date}. Use MM/DD/YYYY", file=sys.stderr)
+            sys.exit(1)
+    if args.end_date:
+        end_date = parse_date_from_text(args.end_date)
+        if end_date is None:
+            print(f"Error: Invalid end date format: {args.end_date}. Use MM/DD/YYYY", file=sys.stderr)
+            sys.exit(1)
 
     # Validate cookie file exists
     if not args.cookie_file.exists():
@@ -282,8 +366,23 @@ def main():
     # Handle --list-keys option
     if args.list_keys:
         key_urls = extract_key_urls(response.text, args.url)
-        if key_urls:
+        total_found = len(key_urls)
+
+        # Apply date filtering if specified
+        if start_date or end_date:
+            key_urls = filter_keys_by_date(key_urls, start_date, end_date)
+            date_range_msg = ""
+            if start_date and end_date:
+                date_range_msg = f" (filtered: {args.start_date} to {args.end_date})"
+            elif start_date:
+                date_range_msg = f" (filtered: from {args.start_date})"
+            elif end_date:
+                date_range_msg = f" (filtered: to {args.end_date})"
+            print(f"\n--- URLs with 'Key' in anchor text ({len(key_urls)} of {total_found} match date filter){date_range_msg} ---")
+        elif key_urls:
             print(f"\n--- URLs with 'Key' in anchor text ({len(key_urls)} found) ---")
+
+        if key_urls:
             for item in key_urls:
                 print(f"  {item['text']}")
                 print(f"    -> {item['url']}")
@@ -295,11 +394,28 @@ def main():
     if args.list_zones:
         # First, extract all Keys URLs from the archive page
         key_urls = extract_key_urls(response.text, args.url)
+        total_keys = len(key_urls)
         if not key_urls:
             print("\nNo 'Keys' URLs found on the archive page.")
             return
 
-        print(f"\nFound {len(key_urls)} 'Keys' URL(s). Fetching Zones links...")
+        # Apply date filtering if specified
+        if start_date or end_date:
+            key_urls = filter_keys_by_date(key_urls, start_date, end_date)
+            date_range_msg = ""
+            if start_date and end_date:
+                date_range_msg = f" (filtered: {args.start_date} to {args.end_date})"
+            elif start_date:
+                date_range_msg = f" (filtered: from {args.start_date})"
+            elif end_date:
+                date_range_msg = f" (filtered: to {args.end_date})"
+            print(f"\nFound {len(key_urls)} of {total_keys} 'Keys' URL(s) in date range{date_range_msg}. Fetching Zones links...")
+        else:
+            print(f"\nFound {len(key_urls)} 'Keys' URL(s). Fetching Zones links...")
+
+        if not key_urls:
+            print("No 'Keys' URLs match the specified date range.")
+            return
 
         # Navigate to each Keys URL and extract Zones links
         zones = fetch_zones_from_keys(key_urls, cookies, verbose=args.verbose)
