@@ -8,13 +8,18 @@ Usage:
     python archive_session.py -c cookies.txt --list-keys
     python archive_session.py -c cookies.txt --list-zones
     python archive_session.py -c cookies.txt --list-keys --start-date 01/01/2024 --end-date 12/31/2024
+    python archive_session.py -c cookies.txt --list-zones --download
+    python archive_session.py -c cookies.txt --list-zones --download /path/to/dir
+    python archive_session.py -c cookies.txt --list-zones --download /path/to/dir --extract
 """
 
 import argparse
 import http.cookiejar
 import json
+import os
 import re
 import sys
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, urljoin
@@ -257,6 +262,133 @@ def fetch_zones_from_keys(keys_urls: list[dict], cookies: dict, verbose: bool = 
     return all_zones
 
 
+def download_zone_files(
+    zones: list[dict],
+    cookies: dict,
+    download_dir: Path,
+    verbose: bool = False
+) -> list[Path]:
+    """Download zone files from URLs to the specified directory.
+
+    Args:
+        zones: List of dicts with 'zone_url' and 'zone_text' keys
+        cookies: Session cookies for authentication
+        download_dir: Directory to save downloaded files
+        verbose: Whether to print verbose output
+
+    Returns:
+        List of Paths to successfully downloaded files
+    """
+    downloaded_files = []
+
+    # Create download directory if it doesn't exist
+    download_dir.mkdir(parents=True, exist_ok=True)
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/zip,application/octet-stream,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+    }
+
+    session = requests.Session()
+    session.cookies.update(cookies)
+
+    for zone in zones:
+        zone_url = zone['zone_url']
+        zone_text = zone.get('zone_text', '')
+
+        # Extract filename from URL or generate one
+        parsed_url = urlparse(zone_url)
+        filename = os.path.basename(parsed_url.path)
+        if not filename or not filename.endswith('.zip'):
+            # Try to create a meaningful filename from the zone text
+            safe_text = re.sub(r'[^\w\-_]', '_', zone_text)[:50]
+            filename = f"{safe_text}.zip" if safe_text else "zone_file.zip"
+
+        filepath = download_dir / filename
+
+        # Handle duplicate filenames
+        counter = 1
+        original_filepath = filepath
+        while filepath.exists():
+            stem = original_filepath.stem
+            filepath = download_dir / f"{stem}_{counter}.zip"
+            counter += 1
+
+        if verbose:
+            print(f"\nDownloading: {zone_text}")
+            print(f"  URL: {zone_url}")
+            print(f"  To: {filepath}")
+
+        try:
+            response = session.get(zone_url, headers=headers, timeout=60, stream=True)
+            response.raise_for_status()
+
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            downloaded_files.append(filepath)
+            if verbose:
+                print(f"  Downloaded: {filepath.stat().st_size} bytes")
+
+        except requests.RequestException as e:
+            print(f"  Error downloading {zone_url}: {e}")
+            continue
+
+    return downloaded_files
+
+
+def extract_zip_files(
+    zip_files: list[Path],
+    extract_dir: Path,
+    verbose: bool = False
+) -> list[Path]:
+    """Extract zip files to the specified directory.
+
+    Args:
+        zip_files: List of Paths to zip files
+        extract_dir: Directory to extract files to
+        verbose: Whether to print verbose output
+
+    Returns:
+        List of Paths to extracted directories/files
+    """
+    extracted = []
+
+    for zip_path in zip_files:
+        if not zip_path.exists():
+            print(f"  Warning: File not found: {zip_path}")
+            continue
+
+        if verbose:
+            print(f"\nExtracting: {zip_path}")
+
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                # Extract to a subdirectory named after the zip file
+                extract_subdir = extract_dir / zip_path.stem
+                extract_subdir.mkdir(parents=True, exist_ok=True)
+
+                zf.extractall(extract_subdir)
+                extracted.append(extract_subdir)
+
+                if verbose:
+                    file_count = len(zf.namelist())
+                    print(f"  Extracted {file_count} file(s) to: {extract_subdir}")
+
+        except zipfile.BadZipFile:
+            print(f"  Error: Invalid zip file: {zip_path}")
+            continue
+        except Exception as e:
+            print(f"  Error extracting {zip_path}: {e}")
+            continue
+
+    return extracted
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Navigate to eminiplayer.net archive page using session cookies.'
@@ -306,6 +438,19 @@ def main():
         default=None,
         help='Filter results to dates <= this date (format: MM/DD/YYYY)'
     )
+    parser.add_argument(
+        '--download',
+        type=str,
+        nargs='?',
+        const='.',
+        default=None,
+        help='Download zone files to the specified directory (default: current directory if flag is used without a path)'
+    )
+    parser.add_argument(
+        '--extract',
+        action='store_true',
+        help='Extract downloaded zip files (requires --download)'
+    )
 
     args = parser.parse_args()
 
@@ -322,6 +467,19 @@ def main():
         if end_date is None:
             print(f"Error: Invalid end date format: {args.end_date}. Use MM/DD/YYYY", file=sys.stderr)
             sys.exit(1)
+
+    # Validate --extract requires --download
+    if args.extract and args.download is None:
+        print("Error: --extract requires --download to be specified", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate --download requires --list-zones
+    if args.download is not None and not args.list_zones:
+        print("Error: --download requires --list-zones to be specified", file=sys.stderr)
+        sys.exit(1)
+
+    # Convert download path to Path object
+    download_dir = Path(args.download) if args.download else None
 
     # Validate cookie file exists
     if not args.cookie_file.exists():
@@ -430,6 +588,22 @@ def main():
                     print(f"\n  From: {zone['key_text']}")
                 print(f"    {zone['zone_text']}")
                 print(f"      -> {zone['zone_url']}")
+
+            # Handle download if specified
+            if download_dir:
+                print(f"\n--- Downloading {len(zones)} zone file(s) to: {download_dir} ---")
+                downloaded_files = download_zone_files(
+                    zones, cookies, download_dir, verbose=args.verbose
+                )
+                print(f"\nSuccessfully downloaded {len(downloaded_files)} of {len(zones)} file(s)")
+
+                # Handle extract if specified
+                if args.extract and downloaded_files:
+                    print(f"\n--- Extracting {len(downloaded_files)} zip file(s) ---")
+                    extracted = extract_zip_files(
+                        downloaded_files, download_dir, verbose=args.verbose
+                    )
+                    print(f"\nSuccessfully extracted {len(extracted)} of {len(downloaded_files)} file(s)")
         else:
             print("\nNo URLs found with 'Zones' in anchor text.")
         return
