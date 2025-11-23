@@ -368,16 +368,15 @@ def extract_zip_files(
 
         try:
             with zipfile.ZipFile(zip_path, 'r') as zf:
-                # Extract to a subdirectory named after the zip file
-                extract_subdir = extract_dir / zip_path.stem
-                extract_subdir.mkdir(parents=True, exist_ok=True)
+                # Extract directly to the extract directory
+                extract_dir.mkdir(parents=True, exist_ok=True)
 
-                zf.extractall(extract_subdir)
-                extracted.append(extract_subdir)
+                zf.extractall(extract_dir)
+                extracted.append(extract_dir)
 
                 if verbose:
                     file_count = len(zf.namelist())
-                    print(f"  Extracted {file_count} file(s) to: {extract_subdir}")
+                    print(f"  Extracted {file_count} file(s) to: {extract_dir}")
 
         except zipfile.BadZipFile:
             print(f"  Error: Invalid zip file: {zip_path}")
