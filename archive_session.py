@@ -6,6 +6,7 @@ Usage:
     python archive_session.py --cookie-file cookies.txt
     python archive_session.py -c cookies.json
     python archive_session.py -c cookies.txt --list-keys
+    python archive_session.py -c cookies.txt --list-zones
 """
 
 import argparse
@@ -124,6 +125,80 @@ def extract_key_urls(html_content: str, base_url: str) -> list[dict]:
     return key_links
 
 
+def extract_zone_urls(html_content: str, base_url: str) -> list[dict]:
+    """Extract all URLs from anchor tags that contain 'Zones' in their text.
+
+    Args:
+        html_content: The HTML content to parse
+        base_url: The base URL for resolving relative links
+
+    Returns:
+        List of dicts with 'url' and 'text' keys
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    zone_links = []
+
+    for anchor in soup.find_all('a', href=True):
+        text = anchor.get_text(strip=True)
+        if 'Zones' in text:
+            href = anchor['href']
+            # Resolve relative URLs
+            full_url = urljoin(base_url, href)
+            zone_links.append({
+                'url': full_url,
+                'text': text
+            })
+
+    return zone_links
+
+
+def fetch_zones_from_keys(keys_urls: list[dict], cookies: dict, verbose: bool = False) -> list[dict]:
+    """Navigate to each Keys URL and extract Zones links.
+
+    Args:
+        keys_urls: List of dicts with 'url' and 'text' keys from extract_key_urls
+        cookies: Session cookies for authentication
+        verbose: Whether to print verbose output
+
+    Returns:
+        List of dicts with 'key_url', 'key_text', 'zone_url', and 'zone_text' keys
+    """
+    all_zones = []
+
+    for key_item in keys_urls:
+        key_url = key_item['url']
+        key_text = key_item['text']
+
+        if verbose:
+            print(f"\nFetching Keys page: {key_text}")
+            print(f"  URL: {key_url}")
+
+        try:
+            response = fetch_archive_page(key_url, cookies)
+            if response.status_code != 200:
+                print(f"  Warning: Got status {response.status_code} for {key_url}")
+                continue
+
+            zone_links = extract_zone_urls(response.text, key_url)
+
+            for zone in zone_links:
+                all_zones.append({
+                    'key_url': key_url,
+                    'key_text': key_text,
+                    'zone_url': zone['url'],
+                    'zone_text': zone['text']
+                })
+
+            if verbose:
+                print(f"  Found {len(zone_links)} Zones link(s)")
+
+        except requests.RequestException as e:
+            print(f"  Error fetching {key_url}: {e}")
+            continue
+
+    return all_zones
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Navigate to eminiplayer.net archive page using session cookies.'
@@ -155,6 +230,11 @@ def main():
         '--list-keys',
         action='store_true',
         help='List all URLs from anchor tags containing "Key" in their text'
+    )
+    parser.add_argument(
+        '--list-zones',
+        action='store_true',
+        help='Navigate to each "Keys" URL and list links containing "Zones" in their text'
     )
 
     args = parser.parse_args()
@@ -209,6 +289,33 @@ def main():
                 print(f"    -> {item['url']}")
         else:
             print("\nNo URLs found with 'Key' in anchor text.")
+        return
+
+    # Handle --list-zones option
+    if args.list_zones:
+        # First, extract all Keys URLs from the archive page
+        key_urls = extract_key_urls(response.text, args.url)
+        if not key_urls:
+            print("\nNo 'Keys' URLs found on the archive page.")
+            return
+
+        print(f"\nFound {len(key_urls)} 'Keys' URL(s). Fetching Zones links...")
+
+        # Navigate to each Keys URL and extract Zones links
+        zones = fetch_zones_from_keys(key_urls, cookies, verbose=args.verbose)
+
+        if zones:
+            print(f"\n--- URLs with 'Zones' in anchor text ({len(zones)} found) ---")
+            current_key = None
+            for zone in zones:
+                # Group by Key URL for better readability
+                if zone['key_text'] != current_key:
+                    current_key = zone['key_text']
+                    print(f"\n  From: {zone['key_text']}")
+                print(f"    {zone['zone_text']}")
+                print(f"      -> {zone['zone_url']}")
+        else:
+            print("\nNo URLs found with 'Zones' in anchor text.")
         return
 
     # Save or display content
