@@ -11,6 +11,7 @@ Usage:
     python archive_session.py -c cookies.txt --list-zones --download
     python archive_session.py -c cookies.txt --list-zones --download /path/to/dir
     python archive_session.py -c cookies.txt --list-zones --download /path/to/dir --extract
+    python archive_session.py -c cookies.txt --list-zones --download /path/to/dir --extract --cleanup
 """
 
 import argparse
@@ -450,6 +451,11 @@ def main():
         action='store_true',
         help='Extract downloaded zip files (requires --download)'
     )
+    parser.add_argument(
+        '--cleanup',
+        action='store_true',
+        help='Delete downloaded zip files after processing (requires --download)'
+    )
 
     args = parser.parse_args()
 
@@ -470,6 +476,11 @@ def main():
     # Validate --extract requires --download
     if args.extract and args.download is None:
         print("Error: --extract requires --download to be specified", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate --cleanup requires --download
+    if args.cleanup and args.download is None:
+        print("Error: --cleanup requires --download to be specified", file=sys.stderr)
         sys.exit(1)
 
     # Validate --download requires --list-zones
@@ -603,6 +614,21 @@ def main():
                         downloaded_files, download_dir, verbose=args.verbose
                     )
                     print(f"\nSuccessfully extracted {len(extracted)} of {len(downloaded_files)} file(s)")
+
+                # Handle cleanup if specified
+                if args.cleanup and downloaded_files:
+                    print(f"\n--- Cleaning up {len(downloaded_files)} zip file(s) ---")
+                    deleted_count = 0
+                    for zip_file in downloaded_files:
+                        try:
+                            if zip_file.exists():
+                                zip_file.unlink()
+                                deleted_count += 1
+                                if args.verbose:
+                                    print(f"  Deleted: {zip_file}")
+                        except OSError as e:
+                            print(f"  Error deleting {zip_file}: {e}")
+                    print(f"\nSuccessfully deleted {deleted_count} of {len(downloaded_files)} zip file(s)")
         else:
             print("\nNo URLs found with 'Zones' in anchor text.")
         return
