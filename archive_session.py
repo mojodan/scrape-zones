@@ -143,7 +143,7 @@ def extract_zone_urls(html_content: str, base_url: str) -> list[dict]:
 
     for anchor in soup.find_all('a', href=True):
         text = anchor.get_text(strip=True)
-        if 'Zones' in text:
+        if 'Zones File' in text:
             href = anchor['href']
             # Resolve relative URLs
             full_url = urljoin(base_url, href)
