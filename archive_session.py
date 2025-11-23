@@ -5,6 +5,7 @@ Script to navigate to eminiplayer.net archive page using session cookies.
 Usage:
     python archive_session.py --cookie-file cookies.txt
     python archive_session.py -c cookies.json
+    python archive_session.py -c cookies.txt --list-keys
 """
 
 import argparse
@@ -12,9 +13,10 @@ import http.cookiejar
 import json
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import requests
+from bs4 import BeautifulSoup
 
 
 def load_netscape_cookies(cookie_file: Path) -> http.cookiejar.MozillaCookieJar:
@@ -95,6 +97,33 @@ def fetch_archive_page(url: str, cookies: dict, timeout: int = 30) -> requests.R
     return response
 
 
+def extract_key_urls(html_content: str, base_url: str) -> list[dict]:
+    """Extract all URLs from anchor tags that contain 'Key' in their text.
+
+    Args:
+        html_content: The HTML content to parse
+        base_url: The base URL for resolving relative links
+
+    Returns:
+        List of dicts with 'url' and 'text' keys
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    key_links = []
+
+    for anchor in soup.find_all('a', href=True):
+        text = anchor.get_text(strip=True)
+        if 'Key' in text:
+            href = anchor['href']
+            # Resolve relative URLs
+            full_url = urljoin(base_url, href)
+            key_links.append({
+                'url': full_url,
+                'text': text
+            })
+
+    return key_links
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Navigate to eminiplayer.net archive page using session cookies.'
@@ -121,6 +150,11 @@ def main():
         type=str,
         default='https://www.eminiplayer.net/archive.aspx',
         help='URL to navigate to (default: https://www.eminiplayer.net/archive.aspx)'
+    )
+    parser.add_argument(
+        '--list-keys',
+        action='store_true',
+        help='List all URLs from anchor tags containing "Key" in their text'
     )
 
     args = parser.parse_args()
@@ -164,6 +198,18 @@ def main():
         print("\nResponse Headers:")
         for key, value in response.headers.items():
             print(f"  {key}: {value}")
+
+    # Handle --list-keys option
+    if args.list_keys:
+        key_urls = extract_key_urls(response.text, args.url)
+        if key_urls:
+            print(f"\n--- URLs with 'Key' in anchor text ({len(key_urls)} found) ---")
+            for item in key_urls:
+                print(f"  {item['text']}")
+                print(f"    -> {item['url']}")
+        else:
+            print("\nNo URLs found with 'Key' in anchor text.")
+        return
 
     # Save or display content
     if args.output:
