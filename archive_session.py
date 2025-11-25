@@ -417,6 +417,86 @@ def download_zone_files(
     return downloaded_files
 
 
+def download_worksheet_files(
+    worksheets: list[dict],
+    cookies: dict,
+    download_dir: Path,
+    verbose: bool = False
+) -> list[Path]:
+    """Download worksheet files from URLs to the specified directory.
+
+    Args:
+        worksheets: List of dicts with 'worksheet_url' and 'worksheet_text' keys
+        cookies: Session cookies for authentication
+        download_dir: Directory to save downloaded files
+        verbose: Whether to print verbose output
+
+    Returns:
+        List of Paths to successfully downloaded files
+    """
+    downloaded_files = []
+
+    # Create download directory if it doesn't exist
+    download_dir.mkdir(parents=True, exist_ok=True)
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+    }
+
+    session = requests.Session()
+    session.cookies.update(cookies)
+
+    for worksheet in worksheets:
+        worksheet_url = worksheet['worksheet_url']
+        worksheet_text = worksheet.get('worksheet_text', '')
+
+        # Extract filename from URL or generate one
+        parsed_url = urlparse(worksheet_url)
+        filename = os.path.basename(parsed_url.path)
+        if not filename:
+            # Try to create a meaningful filename from the worksheet text
+            safe_text = re.sub(r'[^\w\-_]', '_', worksheet_text)[:50]
+            filename = f"{safe_text}.html" if safe_text else "worksheet.html"
+
+        filepath = download_dir / filename
+
+        # Handle duplicate filenames
+        counter = 1
+        original_filepath = filepath
+        while filepath.exists():
+            stem = original_filepath.stem
+            suffix = original_filepath.suffix
+            filepath = download_dir / f"{stem}_{counter}{suffix}"
+            counter += 1
+
+        if verbose:
+            print(f"\nDownloading: {worksheet_text}")
+            print(f"  URL: {worksheet_url}")
+            print(f"  To: {filepath}")
+
+        try:
+            response = session.get(worksheet_url, headers=headers, timeout=60, stream=True)
+            response.raise_for_status()
+
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            downloaded_files.append(filepath)
+            if verbose:
+                print(f"  Downloaded: {filepath.stat().st_size} bytes")
+
+        except requests.RequestException as e:
+            print(f"  Error downloading {worksheet_url}: {e}")
+            continue
+
+    return downloaded_files
+
+
 def extract_zip_files(
     zip_files: list[Path],
     extract_dir: Path,
@@ -553,6 +633,11 @@ def main():
             print(f"Error: Invalid end date format: {args.end_date}. Use MM/DD/YYYY", file=sys.stderr)
             sys.exit(1)
 
+    # Validate --es-worksheet and --list-zones are mutually exclusive
+    if args.es_worksheet and args.list_zones:
+        print("Error: --es-worksheet and --list-zones cannot be used together", file=sys.stderr)
+        sys.exit(1)
+
     # Validate --extract requires --download
     if args.extract and args.download is None:
         print("Error: --extract requires --download to be specified", file=sys.stderr)
@@ -563,9 +648,9 @@ def main():
         print("Error: --cleanup requires --download to be specified", file=sys.stderr)
         sys.exit(1)
 
-    # Validate --download requires --list-zones
-    if args.download is not None and not args.list_zones:
-        print("Error: --download requires --list-zones to be specified", file=sys.stderr)
+    # Validate --download requires --list-zones or --es-worksheet
+    if args.download is not None and not args.list_zones and not args.es_worksheet:
+        print("Error: --download requires --list-zones or --es-worksheet to be specified", file=sys.stderr)
         sys.exit(1)
 
     # Convert download path to Path object
@@ -753,6 +838,14 @@ def main():
                     print(f"\n  From: {worksheet['key_text']}")
                 print(f"    {worksheet['worksheet_text']}")
                 print(f"      -> {worksheet['worksheet_url']}")
+
+            # Handle download if specified
+            if download_dir:
+                print(f"\n--- Downloading {len(worksheets)} Trader Worksheet file(s) to: {download_dir} ---")
+                downloaded_files = download_worksheet_files(
+                    worksheets, cookies, download_dir, verbose=args.verbose
+                )
+                print(f"\nSuccessfully downloaded {len(downloaded_files)} of {len(worksheets)} file(s)")
         else:
             print("\nNo URLs found with 'Trader Worksheet' in anchor text.")
         return
