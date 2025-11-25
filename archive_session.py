@@ -24,7 +24,7 @@ import sys
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, parse_qs, unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -454,11 +454,18 @@ def download_worksheet_files(
         worksheet_url = worksheet['worksheet_url']
         worksheet_text = worksheet.get('worksheet_text', '')
 
-        # Extract filename from URL or generate one
+        # Extract filename from 'file' query parameter, or generate one
         parsed_url = urlparse(worksheet_url)
-        filename = os.path.basename(parsed_url.path)
-        if not filename:
-            # Try to create a meaningful filename from the worksheet text
+        query_params = parse_qs(parsed_url.query)
+
+        if 'file' in query_params and query_params['file']:
+            # Use the 'file' query parameter, URL decoded
+            filename = unquote(query_params['file'][0])
+        elif os.path.basename(parsed_url.path):
+            # Fallback to path-based filename
+            filename = os.path.basename(parsed_url.path)
+        else:
+            # Generate a meaningful filename from the worksheet text
             safe_text = re.sub(r'[^\w\-_]', '_', worksheet_text)[:50]
             filename = f"{safe_text}.html" if safe_text else "worksheet.html"
 
