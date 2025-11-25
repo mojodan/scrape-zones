@@ -460,7 +460,9 @@ def download_worksheet_files(
 
         if 'file' in query_params and query_params['file']:
             # Use the 'file' query parameter, URL decoded
-            filename = unquote(query_params['file'][0])
+            decoded_file = unquote(query_params['file'][0])
+            # Extract just the filename (remove any path components)
+            filename = os.path.basename(decoded_file)
         elif os.path.basename(parsed_url.path):
             # Fallback to path-based filename
             filename = os.path.basename(parsed_url.path)
