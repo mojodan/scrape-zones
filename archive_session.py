@@ -7,6 +7,7 @@ Usage:
     python archive_session.py -c cookies.json
     python archive_session.py -c cookies.txt --list-keys
     python archive_session.py -c cookies.txt --list-zones
+    python archive_session.py -c cookies.txt --es-worksheet
     python archive_session.py -c cookies.txt --list-keys --start-date 01/01/2024 --end-date 12/31/2024
     python archive_session.py -c cookies.txt --list-zones --download
     python archive_session.py -c cookies.txt --list-zones --download /path/to/dir
@@ -161,6 +162,33 @@ def extract_zone_urls(html_content: str, base_url: str) -> list[dict]:
     return zone_links
 
 
+def extract_worksheet_urls(html_content: str, base_url: str) -> list[dict]:
+    """Extract all URLs from anchor tags that contain 'Trader Worksheet' in their text.
+
+    Args:
+        html_content: The HTML content to parse
+        base_url: The base URL for resolving relative links
+
+    Returns:
+        List of dicts with 'url' and 'text' keys
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    worksheet_links = []
+
+    for anchor in soup.find_all('a', href=True):
+        text = anchor.get_text(strip=True)
+        if 'Trader Worksheet' in text:
+            href = anchor['href']
+            # Resolve relative URLs
+            full_url = urljoin(base_url, href)
+            worksheet_links.append({
+                'url': full_url,
+                'text': text
+            })
+
+    return worksheet_links
+
+
 def parse_date_from_text(text: str) -> datetime | None:
     """Extract a date in MM/DD/YYYY format from text.
 
@@ -261,6 +289,53 @@ def fetch_zones_from_keys(keys_urls: list[dict], cookies: dict, verbose: bool = 
             continue
 
     return all_zones
+
+
+def fetch_worksheets_from_keys(keys_urls: list[dict], cookies: dict, verbose: bool = False) -> list[dict]:
+    """Navigate to each Keys URL and extract Trader Worksheet links.
+
+    Args:
+        keys_urls: List of dicts with 'url' and 'text' keys from extract_key_urls
+        cookies: Session cookies for authentication
+        verbose: Whether to print verbose output
+
+    Returns:
+        List of dicts with 'key_url', 'key_text', 'worksheet_url', and 'worksheet_text' keys
+    """
+    all_worksheets = []
+
+    for key_item in keys_urls:
+        key_url = key_item['url']
+        key_text = key_item['text']
+
+        if verbose:
+            print(f"\nFetching Keys page: {key_text}")
+            print(f"  URL: {key_url}")
+
+        try:
+            response = fetch_archive_page(key_url, cookies)
+            if response.status_code != 200:
+                print(f"  Warning: Got status {response.status_code} for {key_url}")
+                continue
+
+            worksheet_links = extract_worksheet_urls(response.text, key_url)
+
+            for worksheet in worksheet_links:
+                all_worksheets.append({
+                    'key_url': key_url,
+                    'key_text': key_text,
+                    'worksheet_url': worksheet['url'],
+                    'worksheet_text': worksheet['text']
+                })
+
+            if verbose:
+                print(f"  Found {len(worksheet_links)} Trader Worksheet link(s)")
+
+        except requests.RequestException as e:
+            print(f"  Error fetching {key_url}: {e}")
+            continue
+
+    return all_worksheets
 
 
 def download_zone_files(
@@ -425,6 +500,11 @@ def main():
         '--list-zones',
         action='store_true',
         help='Navigate to each "Keys" URL and list links containing "Zones" in their text'
+    )
+    parser.add_argument(
+        '--es-worksheet',
+        action='store_true',
+        help='Navigate to each "Keys" URL and list links containing "Trader Worksheet" in their text'
     )
     parser.add_argument(
         '--start-date',
@@ -631,6 +711,50 @@ def main():
                     print(f"\nSuccessfully deleted {deleted_count} of {len(downloaded_files)} zip file(s)")
         else:
             print("\nNo URLs found with 'Zones' in anchor text.")
+        return
+
+    # Handle --es-worksheet option
+    if args.es_worksheet:
+        # First, extract all Keys URLs from the archive page
+        key_urls = extract_key_urls(response.text, args.url)
+        total_keys = len(key_urls)
+        if not key_urls:
+            print("\nNo 'Keys' URLs found on the archive page.")
+            return
+
+        # Apply date filtering if specified
+        if start_date or end_date:
+            key_urls = filter_keys_by_date(key_urls, start_date, end_date)
+            date_range_msg = ""
+            if start_date and end_date:
+                date_range_msg = f" (filtered: {args.start_date} to {args.end_date})"
+            elif start_date:
+                date_range_msg = f" (filtered: from {args.start_date})"
+            elif end_date:
+                date_range_msg = f" (filtered: to {args.end_date})"
+            print(f"\nFound {len(key_urls)} of {total_keys} 'Keys' URL(s) in date range{date_range_msg}. Fetching Trader Worksheet links...")
+        else:
+            print(f"\nFound {len(key_urls)} 'Keys' URL(s). Fetching Trader Worksheet links...")
+
+        if not key_urls:
+            print("No 'Keys' URLs match the specified date range.")
+            return
+
+        # Navigate to each Keys URL and extract Trader Worksheet links
+        worksheets = fetch_worksheets_from_keys(key_urls, cookies, verbose=args.verbose)
+
+        if worksheets:
+            print(f"\n--- URLs with 'Trader Worksheet' in anchor text ({len(worksheets)} found) ---")
+            current_key = None
+            for worksheet in worksheets:
+                # Group by Key URL for better readability
+                if worksheet['key_text'] != current_key:
+                    current_key = worksheet['key_text']
+                    print(f"\n  From: {worksheet['key_text']}")
+                print(f"    {worksheet['worksheet_text']}")
+                print(f"      -> {worksheet['worksheet_url']}")
+        else:
+            print("\nNo URLs found with 'Trader Worksheet' in anchor text.")
         return
 
     # Save or display content
