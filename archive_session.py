@@ -274,15 +274,16 @@ def fetch_zones_from_keys(keys_urls: list[dict], cookies: dict, verbose: bool = 
             zone_links = extract_zone_urls(response.text, key_url)
 
             for zone in zone_links:
-                all_zones.append({
-                    'key_url': key_url,
-                    'key_text': key_text,
-                    'zone_url': zone['url'],
-                    'zone_text': zone['text']
-                })
+                if key_url not in [x['key_url'] for x in all_zones]:
+                    all_zones.append({
+                        'key_url': key_url,
+                        'key_text': key_text,
+                        'zone_url': zone['url'],
+                        'zone_text': zone['text']
+                    })
 
             if verbose:
-                print(f"  Found {len(zone_links)} Zones link(s)")
+                print(f"  Found {len(all_zones)} Zones link(s)")
 
         except requests.RequestException as e:
             print(f"  Error fetching {key_url}: {e}")
@@ -321,15 +322,16 @@ def fetch_worksheets_from_keys(keys_urls: list[dict], cookies: dict, verbose: bo
             worksheet_links = extract_worksheet_urls(response.text, key_url)
 
             for worksheet in worksheet_links:
-                all_worksheets.append({
-                    'key_url': key_url,
-                    'key_text': key_text,
-                    'worksheet_url': worksheet['url'],
-                    'worksheet_text': worksheet['text']
-                })
+                if key_url not in [x['key_url'] for x in all_worksheets]:
+                    all_worksheets.append({
+                        'key_url': key_url,
+                        'key_text': key_text,
+                        'worksheet_url': worksheet['url'],
+                        'worksheet_text': worksheet['text']
+                    })
 
             if verbose:
-                print(f"  Found {len(worksheet_links)} Trader Worksheet link(s)")
+                print(f"  Found {len(all_worksheets)} Trader Worksheet link(s)")
 
         except requests.RequestException as e:
             print(f"  Error fetching {key_url}: {e}")
@@ -762,24 +764,23 @@ def main():
         # Navigate to each Keys URL and extract Zones links
         zones = fetch_zones_from_keys(key_urls, cookies, verbose=args.verbose)
 
+        #x = {z['zone_url'] for z in zones}
+
+        #print(f"\n DMH SCRATCH\n{x} ")
+
         if zones:
             print(f"\n--- URLs with 'Zones' in anchor text ({len(zones)} found) ---")
-            current_key = None
-            for zone in zones:
-                # Group by Key URL for better readability
-                if zone['key_text'] != current_key:
-                    current_key = zone['key_text']
-                    print(f"\n  From: {zone['key_text']}")
-                print(f"    {zone['zone_text']}")
-                print(f"      -> {zone['zone_url']}")
+            filtered_zones = {z['zone_url'] for z in zones}
+            for zone in filtered_zones:
+                print(f"      -> {zone}")
 
             # Handle download if specified
             if download_dir:
-                print(f"\n--- Downloading {len(zones)} zone file(s) to: {download_dir} ---")
+                print(f"\n--- Downloading {len(filtered_zones)} zone file(s) to: {download_dir} ---")
                 downloaded_files = download_zone_files(
                     zones, cookies, download_dir, verbose=args.verbose
                 )
-                print(f"\nSuccessfully downloaded {len(downloaded_files)} of {len(zones)} file(s)")
+                print(f"\nSuccessfully downloaded {len(downloaded_files)} of {len(filtered_zones)} file(s)")
 
                 # Handle extract if specified
                 if args.extract and downloaded_files:
