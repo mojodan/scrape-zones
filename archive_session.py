@@ -150,6 +150,7 @@ def extract_zone_urls(html_content: str, base_url: str) -> list[dict]:
 
     for anchor in soup.find_all('a', href=True):
         text = anchor.get_text(strip=True)
+        # print(f"Checking anchor text for Zones: '{text}'")  # Debug output
         if 'Zones File' in text:
             href = anchor['href']
             # Resolve relative URLs
@@ -270,7 +271,7 @@ def fetch_zones_from_keys(keys_urls: list[dict], cookies: dict, verbose: bool = 
             if response.status_code != 200:
                 print(f"  Warning: Got status {response.status_code} for {key_url}")
                 continue
-
+      
             zone_links = extract_zone_urls(response.text, key_url)
 
             for zone in zone_links:
@@ -630,19 +631,22 @@ def main():
 
     args = parser.parse_args()
 
+    # Default unspecified dates to today
+    today = datetime.now().strftime('%m/%d/%Y')
+    if args.start_date is None:
+        args.start_date = today
+    if args.end_date is None:
+        args.end_date = today
+    
     # Parse date arguments
-    start_date = None
-    end_date = None
-    if args.start_date:
-        start_date = parse_date_from_text(args.start_date)
-        if start_date is None:
-            print(f"Error: Invalid start date format: {args.start_date}. Use MM/DD/YYYY", file=sys.stderr)
-            sys.exit(1)
-    if args.end_date:
-        end_date = parse_date_from_text(args.end_date)
-        if end_date is None:
-            print(f"Error: Invalid end date format: {args.end_date}. Use MM/DD/YYYY", file=sys.stderr)
-            sys.exit(1)
+    start_date = parse_date_from_text(args.start_date)
+    if start_date is None:
+        print(f"Error: Invalid start date format: {args.start_date}. Use MM/DD/YYYY", file=sys.stderr)
+        sys.exit(1)
+    end_date = parse_date_from_text(args.end_date)
+    if end_date is None:
+        print(f"Error: Invalid end date format: {args.end_date}. Use MM/DD/YYYY", file=sys.stderr)
+        sys.exit(1)
 
     # Validate --es-worksheet and --list-zones are mutually exclusive
     if args.es_worksheet and args.list_zones:

@@ -1,18 +1,32 @@
 #!/usr/bin/env node
 // parse-zones.mjs
-// Usage: node parse-zones.mjs [input.md] [output.json]
-//   input.md  - liteparse JSON output (default: output.md)
-//   output    - destination JSON file (default: zones.json)
+// Usage: node parse-zones.mjs [-o outdir] [input.md] [output.json]
+//   -o outdir  - write output to outdir/<input-basename>.json
+//   input.md   - liteparse JSON output (default: output.md)
+//   output     - destination JSON file (default: same name as input, .json)
 //
 // Extracts the KEY ZONES table from a liteparse-parsed trader worksheet PDF
 // and writes it in the zones.json schema:
 //   { "key-zones": { "resistance": [...], "support": [...] } }
 
 import { readFileSync, writeFileSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, join, basename } from 'path';
 
-const INPUT_FILE  = process.argv[2] ?? 'output.md';
-const OUTPUT_FILE = process.argv[3] ?? INPUT_FILE.replace(/\.[^.]+$/, '.json');
+const args = process.argv.slice(2);
+let outputDir = null;
+const positional = [];
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '-o' && i + 1 < args.length) {
+    outputDir = args[++i];
+  } else {
+    positional.push(args[i]);
+  }
+}
+
+const INPUT_FILE = positional[0] ?? 'output.md';
+const OUTPUT_FILE = outputDir
+  ? join(outputDir, basename(INPUT_FILE).replace(/\.[^.]+$/, '.json'))
+  : (positional[1] ?? INPUT_FILE.replace(/\.[^.]+$/, '.json'));
 
 // ── Column x-boundaries (points) ────────────────────────────────────────────
 const ZONE_COL_MAX  = 150;   // zone range column:  x < 150
@@ -33,6 +47,7 @@ const PRICE_RANGE_RE = /^\d+(\.\d+)?(-\d+(\.\d+)?)?$/;
 
 // Table border characters that OCR sometimes picks up as text items
 const TABLE_BORDER_RE = /^[|[\]│┤├┼└┘┐┌─+\-=\s]+$/;
+const clean = i => !TABLE_BORDER_RE.test(i.text);
 
 function parseZoneRange(text) {
   const t = text.trim();
@@ -47,6 +62,13 @@ function parseZoneRange(text) {
   return (isNaN(lo) || isNaN(hi)) ? null : { lo, hi };
 }
 
+// Directional Bias label prefixes → output keys
+const BIAS_LABEL_KEYS = [
+  { prefix: 'Short-term',    key: 'short-term'     },
+  { prefix: 'Intermediate',  key: 'intermediate'   },
+  { prefix: 'Bigger Picture',key: 'bigger-picture' },
+];
+
 // ── Load & flatten ───────────────────────────────────────────────────────────
 const raw  = readFileSync(resolve(INPUT_FILE), 'utf8');
 const data = JSON.parse(raw);
@@ -59,14 +81,56 @@ const allItems = data.pages.flatMap((page, pi) =>
 );
 allItems.sort((a, b) => a.cumY - b.cumY || a.x - b.x);
 
-// ── Locate KEY ZONES section ─────────────────────────────────────────────────
+// ── Locate section anchors ───────────────────────────────────────────────────
 const keyZonesItem = allItems.find(item => item.text.trim() === 'KEY ZONES');
 if (!keyZonesItem) throw new Error('KEY ZONES heading not found');
 
+// cumY of every "10-Day Range Analysis" heading (can appear on multiple pages)
+const rangeAnalysisCumYs = allItems
+  .filter(i => i.text.trim() === '10-Day Range Analysis')
+  .map(i => i.cumY)
+  .sort((a, b) => a - b);
+
 const after = allItems.filter(item => item.cumY > keyZonesItem.cumY);
 
+// ── Extract Directional Bias ─────────────────────────────────────────────────
+// In the original textItems order (document reading order) the 3 bias rows
+// appear contiguously immediately after the "Directional Bias" heading entry,
+// before the Economic Reports section.  Collect items into y-rows and stop
+// once we have 3, so unrelated items never contaminate the result.
+const page1Items = data.pages[0].textItems;
+const dbIdx = page1Items.findIndex(i => i.text.trim() === 'Directional Bias');
+if (dbIdx === -1) throw new Error('Directional Bias heading not found');
+
+const bias = {};
+const dbRows = [];
+let rowY = null, rowItems = [];
+
+for (let i = dbIdx + 1; i < page1Items.length && dbRows.length < 3; i++) {
+  const item = page1Items[i];
+  if (!clean(item)) continue;
+  if (rowY === null || Math.abs(item.y - rowY) < 3) {
+    if (rowY === null) rowY = item.y;
+    rowItems.push(item);
+  } else {
+    dbRows.push(rowItems);
+    rowY = item.y;
+    rowItems = [item];
+  }
+}
+if (rowItems.length > 0 && dbRows.length < 3) dbRows.push(rowItems);
+
+for (const row of dbRows) {
+  const text = row.sort((a, b) => a.x - b.x).map(i => i.text.trim()).join(' ').trim();
+  for (const { prefix, key } of BIAS_LABEL_KEYS) {
+    if (text.startsWith(prefix)) {
+      bias[key] = text.slice(prefix.length).trim();
+      break;
+    }
+  }
+}
+
 // ── Split into columns (exclude OCR table-border artifacts) ──────────────────
-const clean = i => !TABLE_BORDER_RE.test(i.text);
 const zoneCol  = after.filter(i => i.x < ZONE_COL_MAX);
 const biasCol  = after.filter(i => i.x >= BIAS_COL_MIN && i.x < BIAS_COL_MAX && clean(i));
 const notesCol = after.filter(i => i.x >= NOTES_COL_MIN && clean(i));
@@ -119,12 +183,34 @@ function getSectionFor(item) {
 const resistance = [];
 const support    = [];
 
+let prevZoneCumY = -Infinity;  // cumY of the last accepted zone row
+let lastLo       = null;       // zone_lo of the last accepted zone
+let inSkipRegion = false;      // true while skipping 10-Day Range Analysis junk rows
+
 for (const zr of zoneRows) {
   const section = getSectionFor(zr);
   if (!section) continue;
 
   const range = parseZoneRange(zr.text);
   if (!range) continue;
+
+  // If a 10-Day Range Analysis heading appeared between the last good zone and
+  // this one, and zone_lo drops by more than 50, enter skip mode.
+  if (!inSkipRegion) {
+    const triggered = rangeAnalysisCumYs.some(ry => ry > prevZoneCumY && ry < zr.cumY);
+    if (triggered && lastLo !== null && (lastLo - range.lo) > 50) {
+      inSkipRegion = true;
+    }
+  }
+
+  // In skip mode: resume only when zone_lo is back within 50 of the last good value.
+  if (inSkipRegion) {
+    if (lastLo !== null && Math.abs(range.lo - lastLo) <= 50) {
+      inSkipRegion = false;
+    } else {
+      continue;
+    }
+  }
 
   const biasItems  = (biasMap.get(zr)  ?? []).sort((a, b) => a.cumY - b.cumY || a.x - b.x);
   const notesItems = (notesMap.get(zr) ?? []).sort((a, b) => a.cumY - b.cumY || a.x - b.x);
@@ -140,9 +226,14 @@ for (const zr of zoneRows) {
   const entry = { zone_lo: range.lo, zone_hi: range.hi, bias_effect, notes };
   if (section === 'resistance') resistance.push(entry);
   else                          support.push(entry);
+
+  lastLo       = range.lo;
+  prevZoneCumY = zr.cumY;
 }
 
-const result = { 'key-zones': { resistance, support } };
+const dateKey = basename(INPUT_FILE).match(/^(\d{8})/)?.[1] ?? 'unknown';
+const result = { [dateKey]: { bias, 'key-zones': { resistance, support } } };
 writeFileSync(resolve(OUTPUT_FILE), JSON.stringify(result, null, 2));
 
+console.log(`✓ bias: ${Object.entries(bias).map(([k,v]) => `${k}=${v}`).join(', ')}`);
 console.log(`✓ ${resistance.length} resistance zones, ${support.length} support zones → ${OUTPUT_FILE}`);
